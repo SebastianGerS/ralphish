@@ -612,7 +612,8 @@ You MUST:
         if ! echo "$INITIALIZED_SANDBOXES" | grep -qF ":${SANDBOX}:"; then
             INIT_ARGS=("${PHASE_ARGS[@]}" "${SANDBOX_INIT_EXTRA[@]}")
             [ "$NEW" = true ] && INIT_ARGS+=(--new)
-            sandbox --agent "$AGENT" "${INIT_ARGS[@]}" --bash "$WORK_DIR" <<< 'exit 0' 2>/dev/null || true
+            echo "Initializing sandbox..." >&2
+            sandbox --agent "$AGENT" "${INIT_ARGS[@]}" --bash "$WORK_DIR" <<< 'exit 0' || true
             INITIALIZED_SANDBOXES="${INITIALIZED_SANDBOXES}:${SANDBOX}:"
         fi
 
