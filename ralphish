@@ -10,6 +10,9 @@ MAX_ITERATIONS=1
 INCLUDE_LOCAL_CONFIG=false
 CUSTOM_ENV=()
 ENV_FILE=""
+REVIEWER_MODEL=""
+ORCHESTRATOR_MODEL=""
+WORKER_MODEL=""
 
 usage() {
     cat <<'EOF'
@@ -25,6 +28,9 @@ Options:
       --env KEY=VALUE              Pass environment variable to sandbox (repeatable)
       --env-file FILE              Load environment variables from a file
       --include-local-config       Sync local agent config into sandbox
+      --reviewer-model MODEL       Model for the reviewer phase (default: sonnet-tier)
+      --orchestrator-model MODEL   Model for the orchestrator phase (default: sonnet-tier)
+      --worker-model MODEL         Fallback model for the worker phase when context.yaml has no tier
       --help                       Show this help
 EOF
 }
@@ -126,6 +132,42 @@ while [[ $# -gt 0 ]]; do
         INCLUDE_LOCAL_CONFIG=true
         shift
         ;;
+    --reviewer-model=*)
+        REVIEWER_MODEL="${1#--reviewer-model=}"
+        shift
+        ;;
+    --reviewer-model)
+        if [ -z "$2" ]; then
+            echo "Error: --reviewer-model requires a model ID argument"
+            exit 1
+        fi
+        REVIEWER_MODEL="$2"
+        shift 2
+        ;;
+    --orchestrator-model=*)
+        ORCHESTRATOR_MODEL="${1#--orchestrator-model=}"
+        shift
+        ;;
+    --orchestrator-model)
+        if [ -z "$2" ]; then
+            echo "Error: --orchestrator-model requires a model ID argument"
+            exit 1
+        fi
+        ORCHESTRATOR_MODEL="$2"
+        shift 2
+        ;;
+    --worker-model=*)
+        WORKER_MODEL="${1#--worker-model=}"
+        shift
+        ;;
+    --worker-model)
+        if [ -z "$2" ]; then
+            echo "Error: --worker-model requires a model ID argument"
+            exit 1
+        fi
+        WORKER_MODEL="$2"
+        shift 2
+        ;;
     *)
         WORKSPACE="$1"
         shift
@@ -186,6 +228,53 @@ compute_sandbox_name() {
     echo "$AGENT-$bn"
 }
 
+# ─── Model tier table (update here when adopting a new model family) ────────
+CLAUDE_MODEL_SIMPLE="claude-haiku-4-5-20251001"
+CLAUDE_MODEL_MEDIUM="claude-sonnet-4-6"
+CLAUDE_MODEL_COMPLEX="claude-opus-4-7"
+CODEX_MODEL_SIMPLE="gpt-5-mini"
+CODEX_MODEL_MEDIUM="gpt-5"
+CODEX_MODEL_COMPLEX="gpt-5"
+
+# Apply agent-appropriate sonnet-tier defaults for reviewer and orchestrator
+if [ "$AGENT" = "claude" ]; then
+    : "${REVIEWER_MODEL:=$CLAUDE_MODEL_MEDIUM}"
+    : "${ORCHESTRATOR_MODEL:=$CLAUDE_MODEL_MEDIUM}"
+else
+    : "${REVIEWER_MODEL:=$CODEX_MODEL_MEDIUM}"
+    : "${ORCHESTRATOR_MODEL:=$CODEX_MODEL_MEDIUM}"
+fi
+
+# Resolve worker model from context.yaml worker_tier (falls back to WORKER_MODEL)
+resolve_worker_model() {
+    local context_yaml="$1"
+    local tier=""
+    if [ -f "$context_yaml" ]; then
+        tier=$(grep '^worker_tier:' "$context_yaml" 2>/dev/null | head -1 | sed 's/^worker_tier:[[:space:]]*//' | tr -d '"'"'" | xargs)
+    fi
+    case "$tier" in
+    simple)
+        [ "$AGENT" = "claude" ] && echo "$CLAUDE_MODEL_SIMPLE" || echo "$CODEX_MODEL_SIMPLE"
+        return
+        ;;
+    medium)
+        [ "$AGENT" = "claude" ] && echo "$CLAUDE_MODEL_MEDIUM" || echo "$CODEX_MODEL_MEDIUM"
+        return
+        ;;
+    complex)
+        [ "$AGENT" = "claude" ] && echo "$CLAUDE_MODEL_COMPLEX" || echo "$CODEX_MODEL_COMPLEX"
+        return
+        ;;
+    "")
+        # No tier in context.yaml — fall through to CLI flag
+        ;;
+    *)
+        echo "Warning: unknown worker_tier '$tier' in context.yaml — ignoring" >&2
+        ;;
+    esac
+    echo "$WORKER_MODEL"
+}
+
 case "$MODE" in
 rm)
     # Remove sandbox for the config directory
@@ -208,7 +297,7 @@ rm)
     [ -n "$ENV_FILE" ] && PHASE_ARGS+=(--env-file "$ENV_FILE")
 
     # Extra args for sandbox init (not repeated per phase)
-    SANDBOX_INIT_EXTRA=()
+    SANDBOX_INIT_EXTRA=(--exclude-plugin thedotmack/claude-mem)
     [ "$INCLUDE_LOCAL_CONFIG" = true ] && SANDBOX_INIT_EXTRA+=(--include-local-config)
 
     # ─── Phase prompts ──────────────────────────────────────────────────
@@ -348,6 +437,7 @@ Current iteration: {{ITERATION}}
 5. Write `.ralphish/context.yaml` for the next worker iteration:
    ```yaml
    assigned_task_id: <next eligible task ID, or current task ID if retrying>
+   worker_tier: <simple|medium|complex>
    feedback: "<feedback for the worker>"
    implementation_plan:
      - "<step 1: brief description of the first thing the worker should do>"
@@ -359,6 +449,11 @@ Current iteration: {{ITERATION}}
    prior_attempt_head_sha: "<head_sha from summary.yaml>"
    ```
    The `implementation_plan` should be a concise 2-4 step plan based on your understanding of the task requirements, the codebase, and any feedback from the current iteration. This helps the worker succeed on the first attempt.
+
+   Choose `worker_tier` based on the complexity of the next task:
+   - `simple` — config edits, dependency bumps, docs, typo fixes, single-file mechanical changes
+   - `medium` — most application code, feature additions, well-scoped refactors
+   - `complex` — cross-cutting refactors, novel design work, or anything where `retry_count > 0` on the current task (escalate one level, capped at `complex`)
 
 6. Determine the next action:
    - If NO remaining `todo` tasks (all are done/blocked/skipped): output `<promise>COMPLETE</promise>`
@@ -410,8 +505,12 @@ You MUST:
     run_phase() {
         local phase="$1"
         local prompt="$2"
+        local model="${3:-}"
 
-        sandbox --agent "$AGENT" "${PHASE_ARGS[@]}" --prompt "$prompt" "$WORK_DIR" | \
+        local model_args=()
+        [ -n "$model" ] && model_args=(--model "$model")
+
+        sandbox --agent "$AGENT" "${PHASE_ARGS[@]}" "${model_args[@]}" --prompt "$prompt" "$WORK_DIR" | \
             tee "$TMPFILE" | \
             python3 -u "$SCRIPT_DIR/stream-claude-json.py" \
                 --agent "$AGENT" \
@@ -513,7 +612,8 @@ You MUST:
         if ! echo "$INITIALIZED_SANDBOXES" | grep -qF ":${SANDBOX}:"; then
             INIT_ARGS=("${PHASE_ARGS[@]}" "${SANDBOX_INIT_EXTRA[@]}")
             [ "$NEW" = true ] && INIT_ARGS+=(--new)
-            sandbox --agent "$AGENT" "${INIT_ARGS[@]}" --bash "$WORK_DIR" <<< 'exit 0' 2>/dev/null || true
+            echo "Initializing sandbox..." >&2
+            sandbox --agent "$AGENT" "${INIT_ARGS[@]}" --bash "$WORK_DIR" <<< 'exit 0' || true
             INITIALIZED_SANDBOXES="${INITIALIZED_SANDBOXES}:${SANDBOX}:"
         fi
 
@@ -526,7 +626,8 @@ You MUST:
 
         # Phase 1: Worker — implement one task, write summary.yaml
         worker_prompt="${WORKER_PROMPT//\{\{ITERATION\}\}/$i}"
-        if ! run_phase "worker" "$worker_prompt"; then
+        worker_model=$(resolve_worker_model "$CONFIG_DIR/.ralphish/context.yaml")
+        if ! run_phase "worker" "$worker_prompt" "$worker_model"; then
             sync_state_out
             echo "Worker phase failed"
             exit 1
@@ -540,7 +641,7 @@ You MUST:
         # Phase 2: Reviewer — review the diff, write review.yaml (retry once)
         reviewer_ok=false
         for attempt in 1 2; do
-            if run_phase "reviewer" "$REVIEWER_PROMPT"; then
+            if run_phase "reviewer" "$REVIEWER_PROMPT" "$REVIEWER_MODEL"; then
                 if sandbox_exec "test -f .ralphish/review.yaml" 2>/dev/null; then
                     reviewer_ok=true
                     break
@@ -557,7 +658,7 @@ You MUST:
         # Phase 3: Orchestrator — update progress.yaml, write context.yaml
         orch_prompt="${ORCHESTRATOR_PROMPT//\{\{ITERATION\}\}/$i}"
         orch_rc=0
-        run_phase "orchestrator" "$orch_prompt" || orch_rc=$?
+        run_phase "orchestrator" "$orch_prompt" "$ORCHESTRATOR_MODEL" || orch_rc=$?
 
         # ─── State sync out ──────────────────────────────────────────
         sync_state_out
