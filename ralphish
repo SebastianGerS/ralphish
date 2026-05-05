@@ -334,13 +334,20 @@ Current iteration: {{ITERATION}}
    - Tests pass (run the project test suite if one exists)
    If you spot issues, fix them and amend/add commits before proceeding.
 
-7. Write `.ralphish/summary.yaml` with this exact structure:
+7. **Push and create PR** after self-review passes:
+   - Push the feature branch: `git push -u origin <branch>`
+   - Create a draft PR if one does not already exist:
+     `gh pr view <branch> --json url -q .url 2>/dev/null || gh pr create --draft --title "<task title>" --body "Implements task <task_id>: <brief description of what was done>" --head <branch>`
+   - Record the PR URL returned above (use an empty string if push or PR creation fails — do not abort)
+
+8. Write `.ralphish/summary.yaml` with this exact structure:
    ```yaml
    task_id: <integer>
    task_title: "<string>"
    base_sha: "<40-char sha>"
    head_sha: "<40-char sha>"
    branch: "<branch-name>"
+   pr_url: "<GitHub PR URL, or empty string if push/PR creation failed>"
    what_was_done: "<description of implementation>"
    findings:
      - "<finding 1>"
@@ -353,6 +360,7 @@ You MUST:
 - Always use a feature branch for development
 - Commit one logical change at a time to the feature branch
 - Self-review your diff before writing summary.yaml
+- Push the feature branch and create a draft PR before writing summary.yaml
 - Write .ralphish/summary.yaml before finishing
 - NOT update progress.yaml — the orchestrator handles that'
 
@@ -377,13 +385,23 @@ You MUST:
    - **Test coverage**: Are there adequate tests? Do they pass?
    - **Task alignment**: Does the work stay within scope?
 
-6. Write `.ralphish/review.yaml` with this exact structure:
+6. **Check CI status** using the branch name from summary.yaml:
+   - If `pr_url` is empty or missing in summary.yaml, set `ci_status: no_checks` and skip this step
+   - Otherwise, wait for all CI checks to complete by running:
+     `gh pr checks <branch> --watch 2>/dev/null; gh pr checks <branch> 2>/dev/null`
+   - Determine `ci_status`: `passing` (all green), `failing` (any red/failed), `timed_out`, or `no_checks` (no checks configured on this repo)
+   - If any checks failed, list their names in `ci_details`
+   - CI failure is strong evidence for `request_changes`
+
+7. Write `.ralphish/review.yaml` with this exact structure:
    ```yaml
    task_id: <integer>
    base_sha: "<40-char sha>"
    head_sha: "<40-char sha>"
    verdict: approve  # or: request_changes
    test_results: "<pass/fail summary, or '\''no test suite found'\''>"
+   ci_status: "<passing|failing|timed_out|no_checks>"
+   ci_details: "<names of failing CI checks, or empty>"
    remarks:
      - "<specific remark — reference files and line numbers>"
    ```
@@ -393,7 +411,9 @@ You MUST:
 - NOT update progress.yaml
 - Use the exact base_sha..head_sha range from summary.yaml for your diff
 - Be specific in remarks — reference files and line numbers
-- Only use `approve` or `request_changes` as the verdict'
+- Poll CI checks and include ci_status in review.yaml
+- Only use `approve` or `request_changes` as the verdict
+- Never set verdict to `approve` if ci_status is `failing`'
 
     ORCHESTRATOR_PROMPT='You are the ORCHESTRATOR phase of a three-phase development loop (worker → reviewer → orchestrator).
 
@@ -412,8 +432,9 @@ Current iteration: {{ITERATION}}
 3. Based on the verdict in review.yaml:
 
    **If `approve`:**
+   - First check `ci_status` in review.yaml: if it is `failing`, treat this as `request_changes` regardless of the verdict — do NOT mark the task done while CI is red
    - Set the task status to `done` in progress.yaml
-   - Record `branch` and `head_sha` on the task
+   - Record `branch`, `head_sha`, and `pr_url` (from summary.yaml) on the task
    - Set `retry_count` to 0 on the task
 
    **If `request_changes`:**
@@ -430,6 +451,7 @@ Current iteration: {{ITERATION}}
    - iteration: {{ITERATION}}
      task_id: <id>
      verdict: <approve|request_changes>
+     ci_status: <passing|failing|timed_out|no_checks>
      summary: "<what happened>"
      decision: "<what you decided: done|retry|split|blocked|skipped>"
    ```
@@ -465,7 +487,8 @@ You MUST:
 - NOT modify any code, source files, or project configuration
 - Increment `next_id` when creating new subtasks
 - Keep `orchestration.history` as an append-only log
-- Use valid task statuses: `todo`, `done`, `blocked`, `skipped`'
+- Use valid task statuses: `todo`, `done`, `blocked`, `skipped`
+- Never mark a task `done` if review.yaml has `ci_status: failing`'
 
     # ─── Helper functions ────────────────────────────────────────────────
 

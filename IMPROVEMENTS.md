@@ -27,12 +27,12 @@ forcing planning before execution improves first-attempt success by 20-30%.
 
 ## Tier 2 — High Impact, Medium Effort
 
-### 4. Task Complexity Routing
+### 4. Task Complexity Routing (DONE)
 Classify tasks as simple/medium/complex. Route simple tasks (config changes,
 dependency bumps, docs) to a lighter/faster model or shorter prompt. Anthropic's
 own guidance says this can reduce cost 40-60% on easy tasks without quality loss.
 
-### 5. Cumulative `lessons.yaml` Memory
+### 5. Cumulative `lessons.yaml` Memory *(low priority — largely superseded by claude-mem + target repo CLAUDE.md)*
 Have the orchestrator maintain a running `lessons.yaml` across iterations
 capturing patterns like "this repo's tests require running `make build` first"
 or "the linter enforces 80-char lines". Feed this to the worker as institutional
@@ -45,7 +45,15 @@ reviewer verdict. Store in `progress.yaml` or a separate `metrics.yaml`. This
 gives you a feedback loop to measure the impact of any prompt changes. Without
 it, you're optimizing blind.
 
-### 7. Smarter Retry with Alternative Approaches
+### 7. Remote Push, PR Creation, and CI Validation
+After the worker commits, push the feature branch and create a draft PR (idempotent
+on retry — skip creation if PR already exists). The reviewer polls `gh pr checks`
+until all CI checks complete (10-minute timeout via `--watch`) and records
+`ci_status` in `review.yaml`. CI failure is treated as strong evidence for
+`request_changes`; the orchestrator will not mark a task done while CI is red.
+Requires `GH_TOKEN` in the sandbox env (add to your `.env` file).
+
+### 8. Smarter Retry with Alternative Approaches
 Currently, a retry sends the worker the same task + reviewer feedback. Research
 on MCTS-based agents (SWE-Search, RethinkMCTS) shows that backtracking to try a
 fundamentally different approach beats incremental fixes. Have the orchestrator
@@ -56,28 +64,28 @@ remarks.
 
 ## Tier 3 — Novel / Ambitious
 
-### 8. Parallel Reviewer Voting
+### 9. Parallel Reviewer Voting
 Run 2 reviewer instances in parallel with independent prompts and take the
 stricter verdict. Multi-reviewer consensus significantly reduces false approvals
 (Anthropic's "parallelization" pattern). Cost doubles for reviewer phase but
 catches more bugs.
 
-### 9. Worker Parallel Exploration for Hard Tasks
+### 10. Worker Parallel Exploration for Hard Tasks
 For tasks that have already been rejected once, run 2-3 worker instances with
 different approaches in parallel and have the reviewer pick the best. This is
 the "best-of-N" sampling strategy — a practical lightweight version of MCTS.
 
-### 10. Pre-flight Validation Step
+### 11. Pre-flight Validation Step
 Add a Phase 0.5 (after sync, before worker) that validates the workspace state:
 tests pass on base branch, dependencies resolve, linter is clean. This prevents
 the worker from inheriting a broken baseline and wasting an iteration.
 
-### 11. Dynamic Agent Selection
+### 12. Dynamic Agent Selection
 Currently `--claude` vs `--codex` is a global flag. Allow per-task agent
 selection in `progress.yaml` — some tasks might be better suited to one model
 vs another. The orchestrator could even learn this from retry patterns.
 
-### 12. Checkpoint/Resume
+### 13. Checkpoint/Resume
 On `PAUSE`, serialize enough state that `ralphish` can resume exactly where it
 left off without the user needing to understand what happened. Include a
 human-readable status summary.
