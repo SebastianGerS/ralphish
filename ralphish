@@ -345,29 +345,29 @@ Current iteration: {{ITERATION}}
      `gh pr view <branch> --json url -q .url 2>/dev/null || gh pr create --draft --title "<task title>" --body "Implements task <task_id>: <brief description of what was done>" --head <branch>`
    - Record the PR URL returned above (use an empty string if push or PR creation fails — do not abort)
 
-9. **Token diff, then write `.ralphish/summary.yaml`**:
-   Run `/usage` again. Subtract your baselines from the current values to get the diff.
+9. **Token diff**: Run `/usage` again. Subtract your baselines (`input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`) from the current values to get the diff for each field.
    The `/usage` output looks like: `Tokens: 5,234 input · 1,123 output · 45,230 cache read · 2,341 cache write`
-   Parse the four numbers. If you cannot parse them, write `tokens: null`.
-   Write `.ralphish/summary.yaml` with this exact structure:
-   ```yaml
-   task_id: <integer>
-   task_title: "<string>"
-   base_sha: "<40-char sha>"
-   head_sha: "<40-char sha>"
-   branch: "<branch-name>"
-   pr_url: "<GitHub PR URL, or empty string if push/PR creation failed>"
-   what_was_done: "<description of implementation>"
-   findings:
-     - "<finding 1>"
-   suggestions:
-     - "<suggestion 1>"
-   tokens:
-     input: <integer or null>
-     output: <integer or null>
-     cache_read: <integer or null>
-     cache_write: <integer or null>
-   ```
+   If any value cannot be parsed, use `null` for that field.
+
+10. Write `.ralphish/summary.yaml` with this exact structure:
+    ```yaml
+    task_id: <integer>
+    task_title: "<string>"
+    base_sha: "<40-char sha>"
+    head_sha: "<40-char sha>"
+    branch: "<branch-name>"
+    pr_url: "<GitHub PR URL, or empty string if push/PR creation failed>"
+    what_was_done: "<description of implementation>"
+    findings:
+      - "<finding 1>"
+    suggestions:
+      - "<suggestion 1>"
+    tokens:
+      input: <integer or null>
+      output: <integer or null>
+      cache_read: <integer or null>
+      cache_write: <integer or null>
+    ```
 
 You MUST:
 - Only work on a single task per iteration
@@ -377,8 +377,9 @@ You MUST:
 - Push the feature branch and create a draft PR before writing summary.yaml
 - Write .ralphish/summary.yaml before finishing
 - NOT update progress.yaml — the orchestrator handles that
+- Run /usage as your very first action, before reading context.yaml or touching any code
 - Run /usage before starting work and after finishing to compute your token diff
-- Include the tokens block in summary.yaml (write tokens: null if /usage cannot be parsed)'
+- Include the tokens block in summary.yaml (write null for individual fields that cannot be parsed)'
 
     REVIEWER_PROMPT='You are the REVIEWER phase of a three-phase development loop (worker → reviewer → orchestrator).
 
