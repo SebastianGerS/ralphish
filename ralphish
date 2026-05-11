@@ -385,24 +385,28 @@ You MUST:
 
 ## Instructions
 
-1. Read `.ralphish/summary.yaml` to get the `task_id`, `base_sha`, `head_sha`, and `branch`.
+1. **Token baseline**: Run `/usage` as your very first action and record the four token counts as your baseline:
+   `input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`.
+   If `/usage` output cannot be parsed, set all baselines to 0.
 
-2. Read `progress.yaml` to understand the task requirements (find the task matching `task_id`).
+2. Read `.ralphish/summary.yaml` to get the `task_id`, `base_sha`, `head_sha`, and `branch`.
 
-3. Examine the exact diff using: `git diff <base_sha>..<head_sha>`
+3. Read `progress.yaml` to understand the task requirements (find the task matching `task_id`).
+
+4. Examine the exact diff using: `git diff <base_sha>..<head_sha>`
    Use the SHAs from summary.yaml — do NOT diff branch names, as branches may include unrelated commits.
 
-4. Run the project test suite (if one exists) on the feature branch at `head_sha`:
+5. Run the project test suite (if one exists) on the feature branch at `head_sha`:
    - Checkout `head_sha`, run tests, record pass/fail counts
    - If tests fail, this is strong evidence for `request_changes`
 
-5. Review the implementation for:
+6. Review the implementation for:
    - **Correctness**: Does it match the task requirements?
    - **Quality**: Code style, error handling, edge cases
    - **Test coverage**: Are there adequate tests? Do they pass?
    - **Task alignment**: Does the work stay within scope?
 
-6. **Check CI status** using the branch name from summary.yaml:
+7. **Check CI status** using the branch name from summary.yaml:
    - If `pr_url` is empty or missing in summary.yaml, set `ci_status: no_checks` and skip this step
    - Otherwise, wait for all CI checks to complete by running:
      `gh pr checks <branch> --watch 2>/dev/null; gh pr checks <branch> 2>/dev/null`
@@ -410,7 +414,11 @@ You MUST:
    - If any checks failed, list their names in `ci_details`
    - CI failure is strong evidence for `request_changes`
 
-7. Write `.ralphish/review.yaml` with this exact structure:
+8. **Token diff**: Run `/usage` again. Subtract your baselines (`input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`) from the current values to get the diff for each field.
+   The `/usage` output looks like: `Tokens: 5,234 input · 1,123 output · 45,230 cache read · 2,341 cache write`
+   If any value cannot be parsed, use `null` for that field.
+
+9. Write `.ralphish/review.yaml` with this exact structure:
    ```yaml
    task_id: <integer>
    base_sha: "<40-char sha>"
@@ -421,6 +429,11 @@ You MUST:
    ci_details: "<names of failing CI checks, or empty>"
    remarks:
      - "<specific remark — reference files and line numbers>"
+   tokens:
+     input: <integer or null>
+     output: <integer or null>
+     cache_read: <integer or null>
+     cache_write: <integer or null>
    ```
 
 You MUST:
@@ -430,7 +443,10 @@ You MUST:
 - Be specific in remarks — reference files and line numbers
 - Poll CI checks and include ci_status in review.yaml
 - Only use `approve` or `request_changes` as the verdict
-- Never set verdict to `approve` if ci_status is `failing`'
+- Never set verdict to `approve` if ci_status is `failing`
+- Run /usage as your very first action, before reading any files
+- Run /usage again after finishing and compute the diff against your baselines
+- Include the tokens block in review.yaml (write null for individual fields that cannot be parsed)'
 
     ORCHESTRATOR_PROMPT='You are the ORCHESTRATOR phase of a three-phase development loop (worker → reviewer → orchestrator).
 
