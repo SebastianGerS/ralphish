@@ -39,13 +39,13 @@ or "the linter enforces 80-char lines". Feed this to the worker as institutional
 memory. Prevents repeated mistakes across iterations. Based on JetBrains
 Research (Dec 2025) on observation compression.
 
-### 6. Metrics Collection
+### 6. Metrics Collection (DONE)
 Track per-task: token usage, iteration count, retry count, wall-clock time,
 reviewer verdict. Store in `progress.yaml` or a separate `metrics.yaml`. This
 gives you a feedback loop to measure the impact of any prompt changes. Without
 it, you're optimizing blind.
 
-### 7. Remote Push, PR Creation, and CI Validation
+### 7. Remote Push, PR Creation, and CI Validation (DONE)
 After the worker commits, push the feature branch and create a draft PR (idempotent
 on retry — skip creation if PR already exists). The reviewer polls `gh pr checks`
 until all CI checks complete (10-minute timeout via `--watch`) and records
