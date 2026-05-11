@@ -650,6 +650,7 @@ You MUST:
         # Phase 1: Worker — implement one task, write summary.yaml
         worker_prompt="${WORKER_PROMPT//\{\{ITERATION\}\}/$i}"
         worker_model=$(resolve_worker_model "$CONFIG_DIR/.ralphish/context.yaml")
+        _t0=$SECONDS
         if ! run_phase "worker" "$worker_prompt" "$worker_model"; then
             sync_state_out
             echo "Worker phase failed"
@@ -660,9 +661,11 @@ You MUST:
             echo "Worker phase did not produce .ralphish/summary.yaml"
             exit 1
         fi
+        WORKER_SECONDS=$(( SECONDS - _t0 ))
 
         # Phase 2: Reviewer — review the diff, write review.yaml (retry once)
         reviewer_ok=false
+        _t0=$SECONDS
         for attempt in 1 2; do
             if run_phase "reviewer" "$REVIEWER_PROMPT" "$REVIEWER_MODEL"; then
                 if sandbox_exec "test -f .ralphish/review.yaml" 2>/dev/null; then
@@ -677,9 +680,12 @@ You MUST:
             echo "Reviewer phase failed after retry"
             exit 1
         fi
+        REVIEWER_SECONDS=$(( SECONDS - _t0 ))
 
         # Phase 3: Orchestrator — update progress.yaml, write context.yaml
         orch_prompt="${ORCHESTRATOR_PROMPT//\{\{ITERATION\}\}/$i}"
+        orch_prompt="${orch_prompt//\{\{WORKER_SECONDS\}\}/$WORKER_SECONDS}"
+        orch_prompt="${orch_prompt//\{\{REVIEWER_SECONDS\}\}/$REVIEWER_SECONDS}"
         orch_rc=0
         run_phase "orchestrator" "$orch_prompt" "$ORCHESTRATOR_MODEL" || orch_rc=$?
 
