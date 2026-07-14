@@ -231,7 +231,7 @@ compute_sandbox_name() {
 # ─── Model tier table (update here when adopting a new model family) ────────
 CLAUDE_MODEL_SIMPLE="claude-haiku-4-5-20251001"
 CLAUDE_MODEL_MEDIUM="claude-sonnet-4-6"
-CLAUDE_MODEL_COMPLEX="claude-opus-4-7"
+CLAUDE_MODEL_COMPLEX="claude-opus-4-8"
 CODEX_MODEL_SIMPLE="gpt-5-mini"
 CODEX_MODEL_MEDIUM="gpt-5"
 CODEX_MODEL_COMPLEX="gpt-5"
@@ -306,9 +306,15 @@ rm)
 
 Current iteration: {{ITERATION}}
 
+## Setup (do this first, before any other shell command)
+
+The harness has prepared an isolated git worktree at `.ralphish-wt` (detached HEAD at `origin/<default_branch>`, fresh upstream, git-crypt and other smudge filters already handled). All shell, git, and file-edit work for this iteration must happen inside that worktree — keep the user'\''s main checkout untouched.
+
+Begin every shell session with `cd .ralphish-wt`. Inside the worktree, both `.ralphish/` and `progress.yaml` are symlinks back to the main repo'\''s copies — so paths like `.ralphish/context.yaml`, `.ralphish/summary.yaml`, and `progress.yaml` keep working without translation.
+
 ## Instructions
 
-1. **Token baseline**: Run `/usage` and record the four token counts as your baseline:
+1. **Token baseline**: Run `/usage` (this is a Claude Code built-in slash command — do NOT invoke it via the Skill tool) and record the four token counts as your baseline:
    `input_baseline`, `output_baseline`, `cache_read_baseline`,
    `cache_write_baseline`.
    If `/usage` output cannot be parsed, set all baselines to 0.
@@ -326,8 +332,15 @@ Current iteration: {{ITERATION}}
 4. Before creating/switching to a feature branch, record the current HEAD SHA of the base branch — this is your `base_sha`.
 
 5. Implement the task:
-   - Create or checkout a feature branch (can be based on default branch or another feature branch)
+   - Extract the ticket identifier from the task title if it matches `NEX-XXXX:` format (e.g. `NEX-1449`)
+   - You are running inside an isolated git worktree (`.ralphish-wt`) that the harness has reset to detached HEAD at `origin/<default_branch>`. Do all git work here. Do not try to leave or unregister this worktree.
+   - Determine the default branch: `DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||")` (fall back to `main` if empty).
+   - If `prior_attempt_branch` is set in context.yaml: `git fetch origin <default_branch> && git checkout <prior_attempt_branch> && git rebase origin/<default_branch>`. Resolve any conflicts. This keeps the PR up to date and avoids stale-base CI failures.
+   - Otherwise: create the feature branch directly from the latest base — `git fetch origin <default_branch> && git checkout -B <branch-name> origin/<default_branch>`. Use `nex-<id>-<brief-slug>` as the branch name when a ticket ID exists (e.g. `nex-1449-module-rename`); otherwise use a descriptive name. `-B` guarantees you branch off the fresh remote tip and works whether or not the default branch is checked out elsewhere (the user'\''s main repo may have it checked out).
+   - Before running `go get` for any `github.com/TV4/*` module, ensure private module access is configured: run `git config --global url."https://oauth2:${GH_TOKEN}@github.com/TV4".insteadOf "https://github.com/TV4"` and `go env -w GOPRIVATE=github.com/TV4/* GONOSUMDB=github.com/TV4/*`. If `GH_TOKEN` is empty, skip the `go get` and leave a TODO comment.
+   - **Before writing any middleware, transport helpers, logging, metrics, tracing, rate limiting, or circuit-breaking code**: check go-kit (`github.com/go-kit/kit`, `github.com/go-kit/log`) for existing implementations first. If go-kit already provides the functionality, use it rather than writing a custom solution.
    - Implement the changes
+   - Run the linter (`golangci-lint run ./...` if present, otherwise `go vet ./...`) and fix all warnings/errors before committing
    - Run all tests/checks and fix any problems
    - Commit your work (one logical change per commit)
 
@@ -341,15 +354,42 @@ Current iteration: {{ITERATION}}
 
 8. **Push and create PR** after self-review passes:
    - Push the feature branch: `git push -u origin <branch>`
-   - Create a draft PR if one does not already exist:
-     `gh pr view <branch> --json url -q .url 2>/dev/null || gh pr create --draft --title "<task title>" --body "Implements task <task_id>: <brief description of what was done>" --head <branch>`
+   - Create a draft PR if one does not already exist. If the task has a `NEX-XXXX` ticket ID, include it in the title prefix and body:
+     `gh pr view <branch> --json url -q .url 2>/dev/null || gh pr create --draft --title "NEX-XXXX: <task title>" --body "Closes NEX-XXXX\n\n<brief description of what was done>" --head <branch>`
+     Otherwise use: `--title "<task title>" --body "<brief description of what was done>"`
    - Record the PR URL returned above (use an empty string if push or PR creation fails — do not abort)
 
-9. **Token diff**: Run `/usage` again. Subtract your baselines (`input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`) from the current values to get the diff for each field.
-   The `/usage` output looks like: `Tokens: 5,234 input · 1,123 output · 45,230 cache read · 2,341 cache write`
-   If any value cannot be parsed, use `null` for that field.
+9. **Poll CI and fix failures** (up to 3 retries) after the PR is created:
+   - If `pr_url` is empty, set `ci_status: no_checks` and skip this step
+   - Parse `owner/repo` from `pr_url` (e.g. `https://github.com/TV4/partners/pull/3` → `TV4/partners`)
+   - For each attempt (maximum 3 fix attempts, plus the initial poll = 4 polls total):
+     a. **Poll** until all runs for the current `head_sha` are complete (up to ~5 min):
+        `gh run list --repo <owner/repo> --branch <branch> --json name,conclusion,status,headSha --limit 30 2>/dev/null`
+        Filter to entries where `headSha == <current head_sha>`. If any have `status` other than `completed`, wait 20 seconds and retry. After ~5 minutes without completion set `ci_status: timed_out` and stop retrying.
+     b. **Evaluate** the completed runs:
+        - Empty list → `ci_status: no_checks`; stop retrying
+        - Ignore runs whose `name` starts with `.github/workflows/` (empty-matrix / missing-environment runs — non-blocking)
+        - Any remaining run with `conclusion: failure` or `conclusion: cancelled` → `ci_status: failing`
+        - All remaining runs with `conclusion: success` or `conclusion: skipped` → `ci_status: passing`; stop retrying
+     c. **If `ci_status: failing`** and attempts remain:
+        - Fetch the failure logs: `gh run list --repo <owner/repo> --branch <branch> --json databaseId,conclusion,headSha --limit 30 2>/dev/null`, filter to failing runs for this `head_sha`, then for each: `gh run view <run-id> --repo <owner/repo> --log-failed 2>/dev/null`
+        - Analyse the logs, fix the root cause in code, commit the fix, push: `git push origin <branch>`
+        - Update `head_sha` to the new HEAD: `git rev-parse HEAD`
+        - Continue to the next attempt
+     d. If all 3 fix attempts are exhausted and CI is still failing, keep `ci_status: failing` and proceed (the reviewer and orchestrator will handle it)
 
-10. Write `.ralphish/summary.yaml` with this exact structure:
+10. **Assign Linear ticket** if the task has a `NEX-XXXX` ticket ID:
+   - Use `git config user.email` to get your email address
+   - Use the Linear MCP `list_issues` tool to find the issue by identifier (e.g. `NEX-1449`), get its UUID `id`
+   - Use the Linear MCP `list_users` tool to find your user UUID by matching email
+   - Call the Linear MCP `save_issue` with `id` and `assigneeId` to assign the issue to yourself
+   - If the Linear MCP is unavailable or any step fails, skip silently — do not abort
+
+11. **Token diff**: Run `/usage` again. Subtract your baselines (`input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`) from the current values to get the diff for each field.
+    The `/usage` output looks like: `Tokens: 5,234 input · 1,123 output · 45,230 cache read · 2,341 cache write`
+    If any value cannot be parsed, use `null` for that field.
+
+12. Write `.ralphish/summary.yaml` with this exact structure:
     ```yaml
     task_id: <integer>
     task_title: "<string>"
@@ -357,6 +397,7 @@ Current iteration: {{ITERATION}}
     head_sha: "<40-char sha>"
     branch: "<branch-name>"
     pr_url: "<GitHub PR URL, or empty string if push/PR creation failed>"
+    ci_status: "<passing|failing|timed_out|no_checks>"
     what_was_done: "<description of implementation>"
     findings:
       - "<finding 1>"
@@ -375,6 +416,7 @@ You MUST:
 - Commit one logical change at a time to the feature branch
 - Self-review your diff before writing summary.yaml
 - Push the feature branch and create a draft PR before writing summary.yaml
+- Poll CI and attempt fixes (up to 3 retries) before writing summary.yaml
 - Write .ralphish/summary.yaml before finishing
 - NOT update progress.yaml — the orchestrator handles that
 - Run /usage as your very first action, before reading context.yaml or touching any code
@@ -383,9 +425,13 @@ You MUST:
 
     REVIEWER_PROMPT='You are the REVIEWER phase of a three-phase development loop (worker → reviewer → orchestrator).
 
+## Setup (do this first, before any other shell command)
+
+The worker did its work inside an isolated git worktree at `.ralphish-wt`. Your git inspection (diff, checkout, test run) must happen there too — do not touch the user'\''s main checkout. Begin every shell session with `cd .ralphish-wt`. Inside the worktree, both `.ralphish/` and `progress.yaml` are symlinks back to the main repo'\''s copies, so paths like `.ralphish/summary.yaml`, `.ralphish/review.yaml`, and `progress.yaml` work transparently.
+
 ## Instructions
 
-1. **Token baseline**: Run `/usage` as your very first action and record the four token counts as your baseline:
+1. **Token baseline**: Run `/usage` (this is a Claude Code built-in slash command — do NOT invoke it via the Skill tool) as your very first action and record the four token counts as your baseline:
    `input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`.
    If `/usage` output cannot be parsed, set all baselines to 0.
 
@@ -405,20 +451,41 @@ You MUST:
    - **Quality**: Code style, error handling, edge cases
    - **Test coverage**: Are there adequate tests? Do they pass?
    - **Task alignment**: Does the work stay within scope?
+   - **TVM conventions** — flag any violation of the following as `request_changes`:
+     - *Naming*: service/module/package names must be lowercase-with-hyphens (or lowercase no-separator for Go packages), no redundant suffixes (`-service`, `-api`, `-backend`), prefer agent nouns (`transcoder` not `transcoding-service`)
+     - *API response shape*: list endpoints must wrap in `{ "items": [...] }`; single-item endpoints must return 404 for missing resources; JSON fields must be camelCase; enum values must be SCREAMING_SNAKE_CASE
+     - *Standard libraries*: Go services must use go-kit (`github.com/go-kit/kit`, `github.com/go-kit/log`) for middleware, transport, logging, metrics, tracing — not custom implementations; Node.js services must use `@tv4/node-kit-*` equivalents
+     - *Data storage*: PostgreSQL (Aurora) for relational data — no t-series instances in production; DynamoDB should use on-demand mode unless provisioned is explicitly justified; Valkey for caching
+     - *Observability*: any new metrics must include `brand`, `job`, and `account` labels; OpenTelemetry semantic conventions must be followed for HTTP metrics and traces
+     - *Language choice*: new services must use Go+Huma for high-traffic/low-latency workloads, TypeScript+Hono for moderate traffic; flag if a new service uses a framework other than Huma or Hono
+     - *Infrastructure (CDKTF)*: AWS infrastructure for TV4 services must use `@tv4/cdktf-extras` prefabs (`InfraStack`, `EcsFargateApp`, `EcsAlb`, `setupGithubActions`) instead of hand-rolling raw CDKTF/Terraform providers — flag any stack that imports directly from `@cdktf/provider-aws` or `@cdktf/provider-github` for resources that cdktf-extras already abstracts (ECS, ALB, ECR, IAM, Route53, GitHub Actions environment)
 
-7. **Check CI status** using the branch name from summary.yaml:
+7. **Verify base freshness**: Confirm the PR branch is up to date with the default branch.
+   - Determine the default branch: `DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||")` (fall back to `main` if empty).
+   - Fetch the latest base: `git fetch origin <default_branch> 2>/dev/null || true`
+   - Check if `head_sha` already contains every commit on `origin/<default_branch>`: `git merge-base --is-ancestor origin/<default_branch> <head_sha>`
+   - If exit code is non-zero, the PR branch is behind the default branch and needs rebasing. Flag this in remarks (include the count of missing commits from `git rev-list --count <head_sha>..origin/<default_branch>`) and set verdict to `request_changes`. Never `approve` a stale branch — CI may pass against a stale base and still break after merge.
+
+8. **Check CI status** using the Actions API (requires Actions: Read permission):
    - If `pr_url` is empty or missing in summary.yaml, set `ci_status: no_checks` and skip this step
-   - Otherwise, wait for all CI checks to complete by running:
-     `gh pr checks <branch> --watch 2>/dev/null; gh pr checks <branch> 2>/dev/null`
-   - Determine `ci_status`: `passing` (all green), `failing` (any red/failed), `timed_out`, or `no_checks` (no checks configured on this repo)
-   - If any checks failed, list their names in `ci_details`
+   - Parse `owner/repo` from `pr_url` (e.g. `https://github.com/TV4/partners/pull/3` → `TV4/partners`)
+   - Get the branch name and `head_sha` from summary.yaml
+   - Poll until all runs for the commit are complete (up to ~5 min). Each iteration:
+     `gh run list --repo <owner/repo> --branch <branch> --json name,conclusion,status,headSha --limit 30 2>/dev/null`
+     Filter to entries where `headSha == head_sha` from summary.yaml. If any have `status` other than `completed`, wait 20 seconds and retry. If still not all complete after ~5 minutes, set `ci_status: timed_out`.
+   - Once all runs are completed (or if the list is empty after filtering):
+     - Empty list → `ci_status: no_checks`
+     - Ignore any run whose `name` starts with `.github/workflows/` — these are workflow runs where no jobs executed (empty matrix, missing environment, etc.) and are non-blocking infrastructure issues. Note them in `ci_details` but do not count them as failures.
+     - Any remaining run has `conclusion: failure` or `conclusion: cancelled` → `ci_status: failing`; list their `name` values in `ci_details`
+     - All remaining runs have `conclusion: success` or `conclusion: skipped` → `ci_status: passing`
+   - **IMPORTANT**: If the command returns any API error (non-zero exit, error message in output), set `ci_status: failing` and record the error in `ci_details`. Never use `no_checks` when you cannot read CI results — only use it when the filtered list is confirmed empty.
    - CI failure is strong evidence for `request_changes`
 
-8. **Token diff**: Run `/usage` again. Subtract your baselines (`input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`) from the current values to get the diff for each field.
+9. **Token diff**: Run `/usage` again. Subtract your baselines (`input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`) from the current values to get the diff for each field.
    The `/usage` output looks like: `Tokens: 5,234 input · 1,123 output · 45,230 cache read · 2,341 cache write`
    If any value cannot be parsed, use `null` for that field.
 
-9. Write `.ralphish/review.yaml` with this exact structure:
+10. Write `.ralphish/review.yaml` with this exact structure:
    ```yaml
    task_id: <integer>
    base_sha: "<40-char sha>"
@@ -444,6 +511,7 @@ You MUST:
 - Poll CI checks and include ci_status in review.yaml
 - Only use `approve` or `request_changes` as the verdict
 - Never set verdict to `approve` if ci_status is `failing`
+- Never set verdict to `approve` if the PR branch is behind the default branch — request a rebase
 - Run /usage as your very first action, before reading any files
 - Run /usage again after finishing and compute the diff against your baselines
 - Include the tokens block in review.yaml (write null for individual fields that cannot be parsed)'
@@ -454,11 +522,15 @@ Current iteration: {{ITERATION}}
 Worker wall-clock seconds: {{WORKER_SECONDS}}
 Reviewer wall-clock seconds: {{REVIEWER_SECONDS}}
 
+## Setup (do this first, before any other shell command)
+
+The worker and reviewer ran inside an isolated git worktree at `.ralphish-wt`. Continue there. Begin every shell session with `cd .ralphish-wt`. Inside the worktree, both `.ralphish/` and `progress.yaml` are symlinks back to the main repo'\''s copies, so paths like `.ralphish/summary.yaml`, `.ralphish/review.yaml`, `.ralphish/context.yaml`, and `progress.yaml` work transparently.
+
 ## Timing and token tracking
 
 Before doing anything else:
 1. Record the current epoch: run `date +%s` and save the result as `_orch_start`.
-2. **Token baseline**: Run `/usage` as your very first action and record the four token counts as your baseline:
+2. **Token baseline**: Run `/usage` (this is a Claude Code built-in slash command — do NOT invoke it via the Skill tool) as your very first action and record the four token counts as your baseline:
    `input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`.
    If `/usage` output cannot be parsed, set all baselines to 0.
 
@@ -476,6 +548,7 @@ Before doing anything else:
 
    **If `approve`:**
    - First check `ci_status` in review.yaml: if it is `failing`, treat this as `request_changes` regardless of the verdict — do NOT mark the task done while CI is red
+   - Also check: if `pr_url` is non-empty in summary.yaml but `ci_status` is `no_checks`, treat this as `request_changes` — a PR with a URL should have CI; `no_checks` here likely means the reviewer could not read CI results
    - Set the task status to `done` in progress.yaml
    - Record `branch`, `head_sha`, and `pr_url` (from summary.yaml) on the task
    - Set `retry_count` to 0 on the task
@@ -483,6 +556,7 @@ Before doing anything else:
    **If `request_changes`:**
    - Increment `retry_count` on the task (add the field if missing, starting from 0)
    - Set `last_rejection` to a short summary of the rejection reason
+   - Record `branch` and `head_sha` (from summary.yaml) on the task — this ensures the next worker checks out the existing branch instead of creating a new one
    - If `retry_count >= 3`, you MUST escalate — do NOT retry again:
      - Preferred: split into smaller subtasks (new tasks with `parent_id` = original task ID, IDs from `next_id`, increment `next_id` after each)
      - Fallback: set task status to `blocked` with explanation in `last_rejection`
@@ -583,6 +657,7 @@ You MUST:
 - Keep `orchestration.history` as an append-only log
 - Use valid task statuses: `todo`, `done`, `blocked`, `skipped`
 - Never mark a task `done` if review.yaml has `ci_status: failing`
+- Never mark a task `done` if review.yaml has `ci_status: no_checks` but summary.yaml has a non-empty `pr_url` (a PR that exists should have CI; `no_checks` on a real PR means CI results were unreadable)
 - Run `date +%s` and `/usage` before doing anything (recorded in the "Timing and token tracking" section)
 - Run `date +%s` and `/usage` again after step 6, compute your orchestrator token diff and orchestrator_seconds
 - Always write wall_clock_seconds and tokens (with per-phase and total) into the orchestration.history entry
@@ -647,6 +722,14 @@ You MUST:
 
     # Fetch upstream and update the local base branch
     sync_phase() {
+        # Read GH_TOKEN from env file in the outer shell so it can be interpolated
+        # into the docker exec command (docker sandbox exec does not inherit --env-file vars)
+        local _gh_token=""
+        if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+            _gh_token=$(grep -E "^GH_TOKEN=" "$ENV_FILE" | head -1 | sed 's/^GH_TOKEN=//')
+        fi
+        [ -z "$_gh_token" ] && _gh_token="${GH_TOKEN:-}"
+
         docker sandbox exec "$SANDBOX" bash -c '
             cd "'"$WORK_DIR"'"
             git fetch origin 2>/dev/null || true
@@ -658,7 +741,72 @@ You MUST:
             else
                 git fetch origin "$DEFAULT_BRANCH":"$DEFAULT_BRANCH" 2>/dev/null || true
             fi
+            if [ -n "'"$_gh_token"'" ]; then
+                git config --global url."https://oauth2:'"$_gh_token"'@github.com/TV4".insteadOf "https://github.com/TV4" 2>/dev/null || true
+            fi
+            go env -w GOPRIVATE=github.com/TV4/* GONOSUMDB=github.com/TV4/* 2>/dev/null || true
         ' 2>/dev/null || true
+    }
+
+    # Ensure a clean, isolated worktree at $WORK_DIR/.ralphish-wt detached at origin/<default>.
+    # Idempotent: refreshes an existing worktree, or creates one if missing.
+    # Handles git-crypt by symlinking the key dir into the worktree gitdir before checkout.
+    # Also creates a .ralphish symlink inside the worktree pointing back to the main repo's
+    # state dir, so a phase running `cd .ralphish-wt` keeps access to context.yaml / summary.yaml.
+    worktree_setup() {
+        docker sandbox exec "$SANDBOX" bash -c '
+            cd "'"$WORK_DIR"'" 2>/dev/null || exit 0
+            [ -d .git ] || exit 0
+            DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||")
+            [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
+            WT=".ralphish-wt"
+            # Ensure the worktree dir and state dir are locally ignored across all worktrees
+            mkdir -p .git/info
+            # Patterns intentionally have no trailing slash so they match both real dirs and symlinks
+            for pat in "/$WT" "/.ralphish" "/progress.yaml"; do
+                grep -qxF "$pat" .git/info/exclude 2>/dev/null || echo "$pat" >> .git/info/exclude
+            done
+            # Refresh upstream so origin/<default> is current
+            git fetch origin "$DEFAULT_BRANCH" 2>/dev/null || true
+            if [ -e "$WT/.git" ] && git -C "$WT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                # Reset existing worktree to a clean detached HEAD at origin/<default>
+                git -C "$WT" reset --hard 2>/dev/null || true
+                git -C "$WT" clean -fdx 2>/dev/null || true
+                git -C "$WT" checkout --detach "origin/$DEFAULT_BRANCH" 2>/dev/null || true
+            else
+                # Clean up any stale directory or registration, then create fresh
+                rm -rf "$WT" 2>/dev/null || true
+                git worktree prune 2>/dev/null || true
+                if [ -d .git/git-crypt/keys ]; then
+                    # Repo uses git-crypt. The smudge filter looks for the key in $GIT_DIR/git-crypt,
+                    # which for a new worktree is the per-worktree gitdir — not the common one where
+                    # the key actually lives. Without intervention, checkout fails on encrypted files.
+                    # Workaround: create with --no-checkout, symlink the key dir into the worktree gitdir,
+                    # then materialise files.
+                    git worktree add --no-checkout --detach "$WT" "origin/$DEFAULT_BRANCH" 2>&1
+                    COMMON_GITDIR=$(git rev-parse --git-common-dir 2>/dev/null)
+                    WT_GITFILE="$(pwd)/$WT/.git"
+                    if [ -f "$WT_GITFILE" ] && [ -n "$COMMON_GITDIR" ]; then
+                        WT_GITDIR=$(sed "s|^gitdir: ||" "$WT_GITFILE")
+                        case "$WT_GITDIR" in /*) ;; *) WT_GITDIR="$(pwd)/$WT_GITDIR";; esac
+                        case "$COMMON_GITDIR" in /*) ;; *) COMMON_GITDIR="$(pwd)/$COMMON_GITDIR";; esac
+                        [ ! -e "$WT_GITDIR/git-crypt" ] && ln -sfn "$COMMON_GITDIR/git-crypt" "$WT_GITDIR/git-crypt"
+                    fi
+                    # `reset --hard HEAD` repopulates the working tree from HEAD with the smudge
+                    # filter now able to find the git-crypt key. `checkout HEAD -- .` here leaves
+                    # files truncated for reasons not fully understood; reset is the reliable form.
+                    git -C "$WT" reset --hard HEAD 2>&1
+                else
+                    git worktree add --detach "$WT" "origin/$DEFAULT_BRANCH" 2>&1
+                fi
+            fi
+            # Symlink .ralphish and progress.yaml into the worktree so phases can `cd .ralphish-wt`
+            # without translating state-file paths.
+            if [ -d "$WT" ]; then
+                [ -e "$WT/.ralphish" ] || ln -sfn ../.ralphish "$WT/.ralphish"
+                [ -e "$WT/progress.yaml" ] || ln -sfn ../progress.yaml "$WT/progress.yaml"
+            fi
+        '
     }
 
     # Copy progress.yaml and .ralphish/ from CONFIG_DIR into WORK_DIR
@@ -743,8 +891,16 @@ You MUST:
         sync_state_in
         sandbox_exec "mkdir -p .ralphish" 2>/dev/null
 
-        # Phase 0: Sync — fetch upstream, update base branch
+        # Phase 0a: Sync — fetch upstream, update base branch
         sync_phase
+
+        # Phase 0b: Worktree setup — prepare an isolated worktree at
+        # <repo>/.ralphish-wt so the user's main checkout stays untouched
+        # and each iteration always starts from a clean origin/<default> base.
+        # The worktree contains a `.ralphish` symlink back to the main repo's
+        # state dir, so the worker's `cd .ralphish-wt` doesn't lose access to
+        # context.yaml / summary.yaml etc.
+        worktree_setup >/dev/null 2>&1 || true
 
         # Phase 1: Worker — implement one task, write summary.yaml
         worker_prompt="${WORKER_PROMPT//\{\{ITERATION\}\}/$i}"
