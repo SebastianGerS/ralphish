@@ -230,11 +230,13 @@ compute_sandbox_name() {
 
 # ─── Model tier table (update here when adopting a new model family) ────────
 CLAUDE_MODEL_SIMPLE="claude-haiku-4-5-20251001"
-CLAUDE_MODEL_MEDIUM="claude-sonnet-4-6"
+CLAUDE_MODEL_MEDIUM="claude-sonnet-5"
 CLAUDE_MODEL_COMPLEX="claude-opus-4-8"
+CLAUDE_MODEL_FRONTIER="claude-fable-5"
 CODEX_MODEL_SIMPLE="gpt-5-mini"
 CODEX_MODEL_MEDIUM="gpt-5"
 CODEX_MODEL_COMPLEX="gpt-5"
+CODEX_MODEL_FRONTIER="gpt-5"
 
 # Apply agent-appropriate sonnet-tier defaults for reviewer and orchestrator
 if [ "$AGENT" = "claude" ]; then
@@ -263,6 +265,10 @@ resolve_worker_model() {
         ;;
     complex)
         [ "$AGENT" = "claude" ] && echo "$CLAUDE_MODEL_COMPLEX" || echo "$CODEX_MODEL_COMPLEX"
+        return
+        ;;
+    frontier)
+        [ "$AGENT" = "claude" ] && echo "$CLAUDE_MODEL_FRONTIER" || echo "$CODEX_MODEL_FRONTIER"
         return
         ;;
     "")
@@ -576,7 +582,7 @@ Before doing anything else:
 5. Write `.ralphish/context.yaml` for the next worker iteration:
    ```yaml
    assigned_task_id: <next eligible task ID, or current task ID if retrying>
-   worker_tier: <simple|medium|complex>
+   worker_tier: <simple|medium|complex|frontier>
    feedback: "<feedback for the worker>"
    implementation_plan:
      - "<step 1: brief description of the first thing the worker should do>"
@@ -593,6 +599,7 @@ Before doing anything else:
    - `simple` — config edits, dependency bumps, docs, typo fixes, single-file mechanical changes
    - `medium` — most application code, feature additions, well-scoped refactors
    - `complex` — cross-cutting refactors, novel design work, or anything where `retry_count > 0` on the current task (escalate one level, capped at `complex`)
+   - `frontier` — reserve for exceptional cases: large multi-file or cross-repo design work, or a task that already failed at `complex` (`retry_count >= 2`) for reasons that look like capability, not spec. It is slow and burns quota fast — never use it for routine work. If the previous attempt errored before producing a summary (e.g. the model was unavailable or refused), drop back to `complex` instead of escalating.
 
 6. Determine the next action:
    - If NO remaining `todo` tasks (all are done/blocked/skipped): output `<promise>COMPLETE</promise>`
