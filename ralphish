@@ -231,12 +231,12 @@ compute_sandbox_name() {
 # ─── Model tier table (update here when adopting a new model family) ────────
 CLAUDE_MODEL_SIMPLE="claude-haiku-4-5-20251001"
 CLAUDE_MODEL_MEDIUM="claude-sonnet-5"
-CLAUDE_MODEL_COMPLEX="claude-opus-4-8"
+CLAUDE_MODEL_COMPLEX="claude-opus-5"
 CLAUDE_MODEL_FRONTIER="claude-fable-5"
-CODEX_MODEL_SIMPLE="gpt-5-mini"
-CODEX_MODEL_MEDIUM="gpt-5"
-CODEX_MODEL_COMPLEX="gpt-5"
-CODEX_MODEL_FRONTIER="gpt-5"
+CODEX_MODEL_SIMPLE="gpt-5.5"
+CODEX_MODEL_MEDIUM="gpt-5.6-sol"
+CODEX_MODEL_COMPLEX="gpt-5.6-sol"
+CODEX_MODEL_FRONTIER="gpt-5.6-sol"
 
 # Apply agent-appropriate sonnet-tier defaults for reviewer and orchestrator
 if [ "$AGENT" = "claude" ]; then
@@ -320,24 +320,19 @@ Begin every shell session with `cd .ralphish-wt`. Inside the worktree, both `.ra
 
 ## Instructions
 
-1. **Token baseline**: Run `/usage` (this is a Claude Code built-in slash command — do NOT invoke it via the Skill tool) and record the four token counts as your baseline:
-   `input_baseline`, `output_baseline`, `cache_read_baseline`,
-   `cache_write_baseline`.
-   If `/usage` output cannot be parsed, set all baselines to 0.
-
-2. Check if `.ralphish/context.yaml` exists. If it does, read it for:
+1. Check if `.ralphish/context.yaml` exists. If it does, read it for:
    - `assigned_task_id`: work on this specific task
    - `implementation_plan`: follow this plan as your starting guide for the task
    - `feedback` and `reviewer_remarks`: address this feedback from the previous attempt
    - `prior_attempt_branch` and `prior_attempt_head_sha`: your previous work to build on
 
-3. If no context.yaml exists or it has no assigned_task_id, pick the first eligible task from `progress.yaml`:
+2. If no context.yaml exists or it has no assigned_task_id, pick the first eligible task from `progress.yaml`:
    - Status is `todo`
    - All `blocked_by` IDs have status `done`
 
-4. Before creating/switching to a feature branch, record the current HEAD SHA of the base branch — this is your `base_sha`.
+3. Before creating/switching to a feature branch, record the current HEAD SHA of the base branch — this is your `base_sha`.
 
-5. Implement the task:
+4. Implement the task:
    - Extract the ticket identifier from the task title if it matches `NEX-XXXX:` format (e.g. `NEX-1449`)
    - You are running inside an isolated git worktree (`.ralphish-wt`) that the harness has reset to detached HEAD at `origin/<default_branch>`. Do all git work here. Do not try to leave or unregister this worktree.
    - Determine the default branch: `DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||")` (fall back to `main` if empty).
@@ -350,22 +345,22 @@ Begin every shell session with `cd .ralphish-wt`. Inside the worktree, both `.ra
    - Run all tests/checks and fix any problems
    - Commit your work (one logical change per commit)
 
-6. After committing, record the feature branch HEAD SHA — this is your `head_sha`.
+5. After committing, record the feature branch HEAD SHA — this is your `head_sha`.
 
-7. **Self-review before finishing**: Run `git diff <base_sha>..<head_sha>` yourself and verify:
+6. **Self-review before finishing**: Run `git diff <base_sha>..<head_sha>` yourself and verify:
    - Every requirement from the task description is addressed
    - No unintended changes, debug prints, or leftover TODO comments
    - Tests pass (run the project test suite if one exists)
    If you spot issues, fix them and amend/add commits before proceeding.
 
-8. **Push and create PR** after self-review passes:
+7. **Push and create PR** after self-review passes:
    - Push the feature branch: `git push -u origin <branch>`
    - Create a draft PR if one does not already exist. If the task has a `NEX-XXXX` ticket ID, include it in the title prefix and body:
      `gh pr view <branch> --json url -q .url 2>/dev/null || gh pr create --draft --title "NEX-XXXX: <task title>" --body "Closes NEX-XXXX\n\n<brief description of what was done>" --head <branch>`
      Otherwise use: `--title "<task title>" --body "<brief description of what was done>"`
    - Record the PR URL returned above (use an empty string if push or PR creation fails — do not abort)
 
-9. **Poll CI and fix failures** (up to 3 retries) after the PR is created:
+8. **Poll CI and fix failures** (up to 3 retries) after the PR is created:
    - If `pr_url` is empty, set `ci_status: no_checks` and skip this step
    - Parse `owner/repo` from `pr_url` (e.g. `https://github.com/TV4/partners/pull/3` → `TV4/partners`)
    - For each attempt (maximum 3 fix attempts, plus the initial poll = 4 polls total):
@@ -384,18 +379,14 @@ Begin every shell session with `cd .ralphish-wt`. Inside the worktree, both `.ra
         - Continue to the next attempt
      d. If all 3 fix attempts are exhausted and CI is still failing, keep `ci_status: failing` and proceed (the reviewer and orchestrator will handle it)
 
-10. **Assign Linear ticket** if the task has a `NEX-XXXX` ticket ID:
+9. **Assign Linear ticket** if the task has a `NEX-XXXX` ticket ID:
    - Use `git config user.email` to get your email address
    - Use the Linear MCP `list_issues` tool to find the issue by identifier (e.g. `NEX-1449`), get its UUID `id`
    - Use the Linear MCP `list_users` tool to find your user UUID by matching email
    - Call the Linear MCP `save_issue` with `id` and `assigneeId` to assign the issue to yourself
    - If the Linear MCP is unavailable or any step fails, skip silently — do not abort
 
-11. **Token diff**: Run `/usage` again. Subtract your baselines (`input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`) from the current values to get the diff for each field.
-    The `/usage` output looks like: `Tokens: 5,234 input · 1,123 output · 45,230 cache read · 2,341 cache write`
-    If any value cannot be parsed, use `null` for that field.
-
-12. Write `.ralphish/summary.yaml` with this exact structure:
+10. Write `.ralphish/summary.yaml` with this exact structure:
     ```yaml
     task_id: <integer>
     task_title: "<string>"
@@ -409,11 +400,6 @@ Begin every shell session with `cd .ralphish-wt`. Inside the worktree, both `.ra
       - "<finding 1>"
     suggestions:
       - "<suggestion 1>"
-    tokens:
-      input: <integer or null>
-      output: <integer or null>
-      cache_read: <integer or null>
-      cache_write: <integer or null>
     ```
 
 You MUST:
@@ -425,9 +411,7 @@ You MUST:
 - Poll CI and attempt fixes (up to 3 retries) before writing summary.yaml
 - Write .ralphish/summary.yaml before finishing
 - NOT update progress.yaml — the orchestrator handles that
-- Run /usage as your very first action, before reading context.yaml or touching any code
-- Run /usage before starting work and after finishing to compute your token diff
-- Include the tokens block in summary.yaml (write null for individual fields that cannot be parsed)'
+- NOT report token usage — the harness reads it from the agent stream'
 
     REVIEWER_PROMPT='You are the REVIEWER phase of a three-phase development loop (worker → reviewer → orchestrator).
 
@@ -437,22 +421,18 @@ The worker did its work inside an isolated git worktree at `.ralphish-wt`. Your 
 
 ## Instructions
 
-1. **Token baseline**: Run `/usage` (this is a Claude Code built-in slash command — do NOT invoke it via the Skill tool) as your very first action and record the four token counts as your baseline:
-   `input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`.
-   If `/usage` output cannot be parsed, set all baselines to 0.
+1. Read `.ralphish/summary.yaml` to get the `task_id`, `base_sha`, `head_sha`, and `branch`.
 
-2. Read `.ralphish/summary.yaml` to get the `task_id`, `base_sha`, `head_sha`, and `branch`.
+2. Read `progress.yaml` to understand the task requirements (find the task matching `task_id`).
 
-3. Read `progress.yaml` to understand the task requirements (find the task matching `task_id`).
-
-4. Examine the exact diff using: `git diff <base_sha>..<head_sha>`
+3. Examine the exact diff using: `git diff <base_sha>..<head_sha>`
    Use the SHAs from summary.yaml — do NOT diff branch names, as branches may include unrelated commits.
 
-5. Run the project test suite (if one exists) on the feature branch at `head_sha`:
+4. Run the project test suite (if one exists) on the feature branch at `head_sha`:
    - Checkout `head_sha`, run tests, record pass/fail counts
    - If tests fail, this is strong evidence for `request_changes`
 
-6. Review the implementation for:
+5. Review the implementation for:
    - **Correctness**: Does it match the task requirements?
    - **Quality**: Code style, error handling, edge cases
    - **Test coverage**: Are there adequate tests? Do they pass?
@@ -466,13 +446,13 @@ The worker did its work inside an isolated git worktree at `.ralphish-wt`. Your 
      - *Language choice*: new services must use Go+Huma for high-traffic/low-latency workloads, TypeScript+Hono for moderate traffic; flag if a new service uses a framework other than Huma or Hono
      - *Infrastructure (CDKTF)*: AWS infrastructure for TV4 services must use `@tv4/cdktf-extras` prefabs (`InfraStack`, `EcsFargateApp`, `EcsAlb`, `setupGithubActions`) instead of hand-rolling raw CDKTF/Terraform providers — flag any stack that imports directly from `@cdktf/provider-aws` or `@cdktf/provider-github` for resources that cdktf-extras already abstracts (ECS, ALB, ECR, IAM, Route53, GitHub Actions environment)
 
-7. **Verify base freshness**: Confirm the PR branch is up to date with the default branch.
+6. **Verify base freshness**: Confirm the PR branch is up to date with the default branch.
    - Determine the default branch: `DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed "s|refs/remotes/origin/||")` (fall back to `main` if empty).
    - Fetch the latest base: `git fetch origin <default_branch> 2>/dev/null || true`
    - Check if `head_sha` already contains every commit on `origin/<default_branch>`: `git merge-base --is-ancestor origin/<default_branch> <head_sha>`
    - If exit code is non-zero, the PR branch is behind the default branch and needs rebasing. Flag this in remarks (include the count of missing commits from `git rev-list --count <head_sha>..origin/<default_branch>`) and set verdict to `request_changes`. Never `approve` a stale branch — CI may pass against a stale base and still break after merge.
 
-8. **Check CI status** using the Actions API (requires Actions: Read permission):
+7. **Check CI status** using the Actions API (requires Actions: Read permission):
    - If `pr_url` is empty or missing in summary.yaml, set `ci_status: no_checks` and skip this step
    - Parse `owner/repo` from `pr_url` (e.g. `https://github.com/TV4/partners/pull/3` → `TV4/partners`)
    - Get the branch name and `head_sha` from summary.yaml
@@ -487,11 +467,7 @@ The worker did its work inside an isolated git worktree at `.ralphish-wt`. Your 
    - **IMPORTANT**: If the command returns any API error (non-zero exit, error message in output), set `ci_status: failing` and record the error in `ci_details`. Never use `no_checks` when you cannot read CI results — only use it when the filtered list is confirmed empty.
    - CI failure is strong evidence for `request_changes`
 
-9. **Token diff**: Run `/usage` again. Subtract your baselines (`input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`) from the current values to get the diff for each field.
-   The `/usage` output looks like: `Tokens: 5,234 input · 1,123 output · 45,230 cache read · 2,341 cache write`
-   If any value cannot be parsed, use `null` for that field.
-
-10. Write `.ralphish/review.yaml` with this exact structure:
+8. Write `.ralphish/review.yaml` with this exact structure:
    ```yaml
    task_id: <integer>
    base_sha: "<40-char sha>"
@@ -502,11 +478,6 @@ The worker did its work inside an isolated git worktree at `.ralphish-wt`. Your 
    ci_details: "<names of failing CI checks, or empty>"
    remarks:
      - "<specific remark — reference files and line numbers>"
-   tokens:
-     input: <integer or null>
-     output: <integer or null>
-     cache_read: <integer or null>
-     cache_write: <integer or null>
    ```
 
 You MUST:
@@ -518,9 +489,7 @@ You MUST:
 - Only use `approve` or `request_changes` as the verdict
 - Never set verdict to `approve` if ci_status is `failing`
 - Never set verdict to `approve` if the PR branch is behind the default branch — request a rebase
-- Run /usage as your very first action, before reading any files
-- Run /usage again after finishing and compute the diff against your baselines
-- Include the tokens block in review.yaml (write null for individual fields that cannot be parsed)'
+- NOT report token usage — the harness reads it from the agent stream'
 
     ORCHESTRATOR_PROMPT='You are the ORCHESTRATOR phase of a three-phase development loop (worker → reviewer → orchestrator).
 
@@ -532,13 +501,9 @@ Reviewer wall-clock seconds: {{REVIEWER_SECONDS}}
 
 The worker and reviewer ran inside an isolated git worktree at `.ralphish-wt`. Continue there. Begin every shell session with `cd .ralphish-wt`. Inside the worktree, both `.ralphish/` and `progress.yaml` are symlinks back to the main repo'\''s copies, so paths like `.ralphish/summary.yaml`, `.ralphish/review.yaml`, `.ralphish/context.yaml`, and `progress.yaml` work transparently.
 
-## Timing and token tracking
+## Timing
 
-Before doing anything else:
-1. Record the current epoch: run `date +%s` and save the result as `_orch_start`.
-2. **Token baseline**: Run `/usage` (this is a Claude Code built-in slash command — do NOT invoke it via the Skill tool) as your very first action and record the four token counts as your baseline:
-   `input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`.
-   If `/usage` output cannot be parsed, set all baselines to 0.
+Before doing anything else, record the current epoch: run `date +%s` and save the result as `_orch_start`.
 
 ## Instructions
 
@@ -606,55 +571,34 @@ Before doing anything else:
    - If external action is needed before next task (PR merge, deployment, manual approval, or you significantly restructured the plan): output `<promise>PAUSE</promise>`. NOTE: switching to a different repo is NOT external action — the orchestrator handles repo switches automatically.
    - Otherwise: output nothing (the loop continues to the next iteration)
 
-7. **Token diff and self-timing**:
-   Run `/usage` again. Subtract your baselines (`input_baseline`, `output_baseline`, `cache_read_baseline`, `cache_write_baseline`) from the current values to get your orchestrator token diff.
-   The `/usage` output looks like: `Tokens: 5,234 input · 1,123 output · 45,230 cache read · 2,341 cache write`
-   If any value cannot be parsed, use `null` for that field.
-   Run `date +%s` and subtract `_orch_start` to get `orchestrator_seconds`.
-   Read `tokens` from `.ralphish/summary.yaml` (worker) and `.ralphish/review.yaml` (reviewer). Use `null` for missing or unparseable values.
+7. **Self-timing**: Run `date +%s` and subtract `_orch_start` to get `orchestrator_seconds`.
 
-8. **Append extended metrics to `orchestration.history`** — the entry you wrote in step 4 must include these additional fields. If you already wrote the entry in step 4, update it now to add the metrics fields:
+8. **Append wall-clock metrics to `orchestration.history`** — the entry you wrote in step 4 must include these additional fields. If you already wrote the entry in step 4, update it now to add the metrics fields:
    ```yaml
    wall_clock_seconds:
      worker: {{WORKER_SECONDS}}
      reviewer: {{REVIEWER_SECONDS}}
      orchestrator: <orchestrator_seconds>
      total: <sum of all three>
-   tokens:
-     worker:      { input: <int or null>, output: <int or null>, cache_read: <int or null>, cache_write: <int or null> }
-     reviewer:    { input: <int or null>, output: <int or null>, cache_read: <int or null>, cache_write: <int or null> }
-     orchestrator: { input: <int or null>, output: <int or null>, cache_read: <int or null>, cache_write: <int or null> }
-     total:       { input: <sum or null>, output: <sum or null>, cache_read: <sum or null>, cache_write: <sum or null> }
    ```
-   For `total` token fields: if ANY phase has `null` for a field, write `null` for that total field.
+   Token counts are recorded by the harness in `.ralphish-metrics.jsonl` — do not write them here.
 
 9. **Upsert top-level `metrics` section in `progress.yaml`** (create it if missing with all counters at 0):
    - Increment `total_iterations` by 1
    - Add this iteration'\''s `wall_clock_seconds.total` to `total_wall_clock_seconds` (skip if null)
-   - For each token field (input, output, cache_read, cache_write): add `tokens.total.<field>` to `total_tokens.<field>` (skip if null)
    - Upsert the `per_task` entry for `task_id`:
-     - If approved this iteration: set `iterations` to `retry_count + 1` (or 1 if no retries), set `wall_clock_seconds` and `tokens` to this iteration'\''s values
-     - If retrying: increment `iterations` by 1, add to cumulative `wall_clock_seconds` and `tokens`
+     - If approved this iteration: set `iterations` to `retry_count + 1` (or 1 if no retries) and set `wall_clock_seconds` to this iteration'\''s value
+     - If retrying: increment `iterations` by 1 and add to the cumulative `wall_clock_seconds`
 
    The `metrics` section shape:
    ```yaml
    metrics:
      total_iterations: <integer>
      total_wall_clock_seconds: <integer>
-     total_tokens:
-       input: <integer or null>
-       output: <integer or null>
-       cache_read: <integer or null>
-       cache_write: <integer or null>
      per_task:
        - task_id: <integer>
          iterations: <integer>
          wall_clock_seconds: <integer>
-         tokens:
-           input: <integer or null>
-           output: <integer or null>
-           cache_read: <integer or null>
-           cache_write: <integer or null>
    ```
 
 You MUST:
@@ -665,11 +609,11 @@ You MUST:
 - Use valid task statuses: `todo`, `done`, `blocked`, `skipped`
 - Never mark a task `done` if review.yaml has `ci_status: failing`
 - Never mark a task `done` if review.yaml has `ci_status: no_checks` but summary.yaml has a non-empty `pr_url` (a PR that exists should have CI; `no_checks` on a real PR means CI results were unreadable)
-- Run `date +%s` and `/usage` before doing anything (recorded in the "Timing and token tracking" section)
-- Run `date +%s` and `/usage` again after step 6, compute your orchestrator token diff and orchestrator_seconds
-- Always write wall_clock_seconds and tokens (with per-phase and total) into the orchestration.history entry
-- Always upsert the per_task entry and update top-level accumulators in the metrics section
-- Write null for any token field that cannot be parsed — never write tokens: null as a scalar'
+- Run `date +%s` before doing anything (recorded in the "Timing" section)
+- Run `date +%s` again after step 6 to compute orchestrator_seconds
+- Always write wall_clock_seconds into the orchestration.history entry
+- NOT report token usage — the harness records it in `.ralphish-metrics.jsonl`
+- Always upsert the per_task entry and update top-level accumulators in the metrics section'
 
     # ─── Helper functions ────────────────────────────────────────────────
 
@@ -725,6 +669,107 @@ You MUST:
         local rc=0
         wait "$pid" || rc=$?
         return $rc
+    }
+
+    # Read token usage out of the raw stream-json the last run_phase tee'd to
+    # $TMPFILE. Claude closes a run with a `result` event carrying `usage`;
+    # Codex uses `turn.completed`. Echoes "input output cache_read cache_write"
+    # with `null` for anything missing — never fails the phase.
+    phase_usage() {
+        python3 - "$TMPFILE" "$AGENT" <<'PYUSAGE' 2>/dev/null || echo "null null null null"
+import json, sys
+
+path, agent = sys.argv[1], sys.argv[2]
+want = "turn.completed" if agent == "codex" else "result"
+vals = {"input": None, "output": None, "cache_read": None, "cache_write": None}
+try:
+    with open(path, errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if obj.get("type") != want:
+                continue
+            u = obj.get("usage")
+            if not isinstance(u, dict):
+                continue
+            vals = {
+                "input": u.get("input_tokens"),
+                "output": u.get("output_tokens"),
+                "cache_read": u.get("cache_read_input_tokens", u.get("cached_input_tokens")),
+                "cache_write": u.get("cache_creation_input_tokens"),
+            }
+except OSError:
+    pass
+print(" ".join("null" if vals[k] is None else str(vals[k])
+               for k in ("input", "output", "cache_read", "cache_write")))
+PYUSAGE
+    }
+
+    # Append one machine-written record per iteration to
+    # $CONFIG_DIR/.ralphish-metrics.jsonl. It lives outside .ralphish/ because
+    # that directory is wiped at startup and replaced wholesale by
+    # sync_state_out. Args: iteration w_secs r_secs o_secs w_usage r_usage o_usage
+    record_iteration_metrics() {
+        python3 - "$CONFIG_DIR" "$@" <<'PYMETRICS' 2>/dev/null || true
+import json, os, re, sys, time
+
+config_dir, iteration = sys.argv[1], sys.argv[2]
+secs = sys.argv[3:6]
+usages = sys.argv[6:9]
+fields = ("input", "output", "cache_read", "cache_write")
+phases = ("worker", "reviewer", "orchestrator")
+
+
+def num(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_usage(raw):
+    parts = (raw or "").split()
+    parts += ["null"] * (len(fields) - len(parts))
+    return dict(zip(fields, (num(p) for p in parts)))
+
+
+tokens = {p: parse_usage(u) for p, u in zip(phases, usages)}
+total = {}
+for f in fields:
+    vals = [tokens[p][f] for p in phases]
+    total[f] = None if any(v is None for v in vals) else sum(vals)
+tokens["total"] = total
+
+wall = {p: num(v) for p, v in zip(phases, secs)}
+known = [v for v in wall.values() if v is not None]
+wall["total"] = sum(known) if len(known) == len(phases) else None
+
+task_id = None
+try:
+    with open(os.path.join(config_dir, ".ralphish", "summary.yaml")) as fh:
+        for line in fh:
+            m = re.match(r"^task_id:\s*(\d+)", line)
+            if m:
+                task_id = int(m.group(1))
+                break
+except OSError:
+    pass
+
+record = {
+    "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "iteration": num(iteration),
+    "task_id": task_id,
+    "wall_clock_seconds": wall,
+    "tokens": tokens,
+}
+with open(os.path.join(config_dir, ".ralphish-metrics.jsonl"), "a") as fh:
+    fh.write(json.dumps(record) + "\n")
+PYMETRICS
     }
 
     # Fetch upstream and update the local base branch
@@ -924,6 +969,7 @@ You MUST:
             exit 1
         fi
         WORKER_SECONDS=$(( SECONDS - _t0 ))
+        WORKER_USAGE=$(phase_usage)
 
         # Phase 2: Reviewer — review the diff, write review.yaml (retry once)
         reviewer_ok=false
@@ -943,16 +989,25 @@ You MUST:
             exit 1
         fi
         REVIEWER_SECONDS=$(( SECONDS - _t0 ))
+        REVIEWER_USAGE=$(phase_usage)
 
         # Phase 3: Orchestrator — update progress.yaml, write context.yaml
         orch_prompt="${ORCHESTRATOR_PROMPT//\{\{ITERATION\}\}/$i}"
         orch_prompt="${orch_prompt//\{\{WORKER_SECONDS\}\}/$WORKER_SECONDS}"
         orch_prompt="${orch_prompt//\{\{REVIEWER_SECONDS\}\}/$REVIEWER_SECONDS}"
         orch_rc=0
+        _t0=$SECONDS
         run_phase "orchestrator" "$orch_prompt" "$ORCHESTRATOR_MODEL" || orch_rc=$?
+        ORCHESTRATOR_SECONDS=$(( SECONDS - _t0 ))
+        ORCHESTRATOR_USAGE=$(phase_usage)
 
         # ─── State sync out ──────────────────────────────────────────
         sync_state_out
+
+        # ─── Metrics (harness-measured, no model involvement) ─────────
+        record_iteration_metrics "$i" \
+            "$WORKER_SECONDS" "$REVIEWER_SECONDS" "$ORCHESTRATOR_SECONDS" \
+            "$WORKER_USAGE" "$REVIEWER_USAGE" "$ORCHESTRATOR_USAGE"
 
         # Check signals from orchestrator output
         if grep -q '<promise>COMPLETE</promise>' "$TMPFILE"; then

@@ -70,6 +70,11 @@ Phase communication uses structured YAML files in `.ralphish/` (transient, wiped
 
 All durable state lives in `progress.yaml` (task statuses, retry counts, orchestration history).
 
+Per-iteration cost and timing is recorded by the harness itself — not by the agents — as one JSON
+line per iteration in `.ralphish-metrics.jsonl` next to `progress.yaml`. Token counts come from the
+final `result` (Claude) / `turn.completed` (Codex) event of each phase's stream, so they are exact
+and survive a phase that never wrote its YAML artifact.
+
 ### Retry and escalation
 
 The orchestrator tracks consecutive review rejections per task via `retry_count` in `progress.yaml`. After 3 consecutive rejections, it escalates:

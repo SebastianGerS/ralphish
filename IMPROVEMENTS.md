@@ -45,6 +45,14 @@ reviewer verdict. Store in `progress.yaml` or a separate `metrics.yaml`. This
 gives you a feedback loop to measure the impact of any prompt changes. Without
 it, you're optimizing blind.
 
+*2026-08-20 — token counts are now harness-measured.* The original design had
+each phase run `/usage` and diff it; `/usage` does not exist in headless `-p`
+mode, so every token field came out `null` for nine iterations. The harness now
+parses the final `result` (Claude) / `turn.completed` (Codex) event from the
+stream it already tees to `$TMPFILE` and appends one record per iteration to
+`.ralphish-metrics.jsonl`. Wall-clock stays in `progress.yaml`; the phase
+prompts no longer mention tokens at all.
+
 ### 7. Remote Push, PR Creation, and CI Validation (DONE)
 After the worker commits, push the feature branch and create a draft PR (idempotent
 on retry — skip creation if PR already exists). The reviewer polls `gh pr checks`
